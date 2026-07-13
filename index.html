@@ -809,7 +809,14 @@ function renderTable(elId, items, kind){
     return a.localeCompare(b);
   });
   for (const cat of catNames) {
-    groups[cat].sort((a,b) => a.name.localeCompare(b.name));
+    groups[cat].sort((a,b) => {
+      const aFloorBatches = new Set(Object.keys(a.batches['SALES FLOOR'] || {}));
+      const bFloorBatches = new Set(Object.keys(b.batches['SALES FLOOR'] || {}));
+      const aHasGreen = a.sourceBatches && [...Object.keys(a.sourceBatches)].some(batch => aFloorBatches.has(batch));
+      const bHasGreen = b.sourceBatches && [...Object.keys(b.sourceBatches)].some(batch => bFloorBatches.has(batch));
+      if (aHasGreen !== bHasGreen) return aHasGreen ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
   }
 
   const badgeClass = kind === 'dv' ? 'dv' : (kind === 'v' ? 'v' : 'oos');
@@ -862,7 +869,12 @@ function renderFloorBatches(floorMap, subroomMap){
 
 function renderBatches(batchMap, floorBatches, subroomMap){
   if (!batchMap) return '';
-  const entries = Object.entries(batchMap).sort((a,b) => b[1]-a[1]);
+  const entries = Object.entries(batchMap).sort((a,b) => {
+    const aSame = floorBatches && floorBatches.has(a[0]);
+    const bSame = floorBatches && floorBatches.has(b[0]);
+    if (aSame !== bSame) return aSame ? -1 : 1;
+    return b[1] - a[1];
+  });
   if (!entries.length) return '';
   const chips = entries.map(([tag, qty]) => {
     const isSame = floorBatches && floorBatches.has(tag);
