@@ -261,7 +261,9 @@
   .stamp.dv{ background:var(--amber-tint); color:#8a5b0a; }
   .stamp.v{ background:var(--slate-tint); color:#2b4470; }
   .stamp.oos{ background:var(--red-tint); color:#8a2c21; }
+  .stamp.done{ background:var(--brand-tint); color:var(--brand-dark); }
   .section-count{ font-size:12.5px; color:var(--ink-faint); font-weight:500; }
+  .section-head .spacer{ flex:1; }
 
   .ledger{
     background:#fff;
@@ -385,6 +387,51 @@
   .badge.v{ background:var(--slate-tint); color:#2b4470; }
   .badge.oos{ background:var(--red-tint); color:#8a2c21; }
 
+  /* pull action button */
+  .pull-btn{
+    appearance:none;
+    border:1px solid var(--brand);
+    background:var(--brand-tint);
+    color:var(--brand-dark);
+    font-family:'Inter', sans-serif;
+    font-weight:700;
+    font-size:12px;
+    padding:6px 13px;
+    border-radius:6px;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    white-space:nowrap;
+    transition:.15s background, .15s border-color, .15s transform;
+  }
+  .pull-btn:hover{ background:#dcebe3; border-color:var(--brand-dark); }
+  .pull-btn:active{ transform:translateY(1px); }
+  .pull-btn.pulled{
+    background:var(--brand);
+    border-color:var(--brand);
+    color:#fff;
+  }
+  .pull-btn.pulled:hover{ background:var(--brand-dark); }
+  tr.row-pulled td{ background:var(--brand-tint); }
+  tr.row-pulled:hover td{ background:#e0ede7; }
+  tr.row-pulled .prod-name{ color:var(--brand-dark); }
+
+  .pull-undo{
+    appearance:none;
+    border:1px solid var(--line-strong);
+    background:#fff;
+    color:var(--ink-soft);
+    font-family:'Inter', sans-serif;
+    font-weight:600;
+    font-size:11.5px;
+    padding:5px 11px;
+    border-radius:6px;
+    cursor:pointer;
+    transition:.15s background, .15s border-color, .15s color;
+  }
+  .pull-undo:hover{ background:var(--red-tint); border-color:#e6b3aa; color:#8a2c21; }
+
   .empty-note{
     padding:28px;
     text-align:center;
@@ -431,7 +478,7 @@
       font-size:11px;
     }
     .wrap{ max-width:none; }
-    .panel, .panel.instructions, .toolbar, footer, .legend{ display:none !important; }
+    .panel, .panel.instructions, .toolbar, footer, .legend, .no-print{ display:none !important; }
 
     .logo-banner{ max-width:220px; margin:0 auto 10px; }
     .logo-banner img{
@@ -472,6 +519,10 @@
       page-break-before:auto;
     }
     .oos-section{
+      page-break-before:always;
+      break-before:page;
+    }
+    .pulled-section{
       page-break-before:always;
       break-before:page;
     }
@@ -522,6 +573,21 @@
     .batch-chip.floor{ border-color:#000 !important; color:#000 !important; }
     .batch-qty{ color:inherit !important; }
     .arrow{ color:#000; }
+
+    .pull-btn{
+      border:1px solid #000 !important;
+      background:none !important;
+      color:#000 !important;
+      padding:2px 6px;
+      font-weight:700;
+    }
+    .pull-btn.pulled{
+      background:#000 !important;
+      color:#fff !important;
+      -webkit-print-color-adjust:exact;
+      print-color-adjust:exact;
+    }
+    tr.row-pulled td{ background:#f4f4f4 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
   }
 </style>
 </head>
@@ -607,6 +673,16 @@
       </div>
       <div class="ledger"><div id="oosTable"></div></div>
     </div>
+
+    <div class="ledger-section pulled-section" id="pulledSection" style="display:none;">
+      <div class="section-head">
+        <span class="stamp done">Pulled Items</span>
+        <span class="section-count" id="pulledCount"></span>
+        <span class="spacer"></span>
+        <button class="btn secondary no-print" id="clearPulledBtn">Clear Pulled List</button>
+      </div>
+      <div class="ledger"><div id="pulledTable"></div></div>
+    </div>
   </div>
 
   <footer>SoHo Low Stock Report &middot; generated in-browser, nothing leaves your device</footer>
@@ -626,6 +702,10 @@ const reportArea = document.getElementById('reportArea');
 const parInput = document.getElementById('parInput');
 
 let lastRows = null;
+// Tracks items marked "Pulled". Keyed by product name, value is a snapshot
+// of what was pulled (captured at click time) so the bottom list stays put
+// even if the par is changed and the tables re-render.
+const pulledItems = new Map();
 
 dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
@@ -643,13 +723,68 @@ document.getElementById('reloadBtn').addEventListener('click', () => {
   reportArea.classList.remove('show');
   fileNameEl.classList.remove('show');
   fileInput.value = '';
+  pulledItems.clear();
+  renderPulledList();
   window.scrollTo({top:0, behavior:'smooth'});
 });
 
 document.getElementById('printBtn').addEventListener('click', () => window.print());
 
+document.getElementById('clearPulledBtn').addEventListener('click', () => {
+  pulledItems.clear();
+  reportArea.querySelectorAll('.pull-btn.pulled').forEach(b => {
+    b.classList.remove('pulled');
+    b.innerHTML = '&rarr; Pull';
+    const tr = b.closest('tr');
+    if (tr) tr.classList.remove('row-pulled');
+  });
+  renderPulledList();
+});
+
 parInput.addEventListener('change', () => {
   if (lastRows) buildReport(lastRows);
+});
+
+// Single delegated handler for both the "Pull" buttons in the tables and the
+// "Undo" buttons in the pulled list. Both live inside #reportArea.
+reportArea.addEventListener('click', e => {
+  const undo = e.target.closest('.pull-undo');
+  if (undo) {
+    const nm = decodeURIComponent(undo.dataset.name);
+    pulledItems.delete(nm);
+    const mainBtn = reportArea.querySelector('.pull-btn[data-name="' + CSS.escape(undo.dataset.name) + '"]');
+    if (mainBtn) {
+      mainBtn.classList.remove('pulled');
+      mainBtn.innerHTML = '&rarr; Pull';
+      const tr = mainBtn.closest('tr');
+      if (tr) tr.classList.remove('row-pulled');
+    }
+    renderPulledList();
+    return;
+  }
+
+  const btn = e.target.closest('.pull-btn');
+  if (!btn) return;
+  const name = decodeURIComponent(btn.dataset.name);
+  const tr = btn.closest('tr');
+  if (pulledItems.has(name)) {
+    pulledItems.delete(name);
+    btn.classList.remove('pulled');
+    btn.innerHTML = '&rarr; Pull';
+    if (tr) tr.classList.remove('row-pulled');
+  } else {
+    pulledItems.set(name, {
+      name,
+      category: decodeURIComponent(btn.dataset.cat || ''),
+      source: btn.dataset.source,
+      pull: btn.dataset.pull,
+      srcQty: btn.dataset.srcqty
+    });
+    btn.classList.add('pulled');
+    btn.innerHTML = '&#10003; Pulled';
+    if (tr) tr.classList.add('row-pulled');
+  }
+  renderPulledList();
 });
 
 function showError(msg){
@@ -696,6 +831,8 @@ function handleFile(file){
           return;
         }
         lastRows = rows;
+        // Fresh export = fresh pull session.
+        pulledItems.clear();
         buildReport(rows);
       } catch (err) {
         showError('Something went wrong reading that file: ' + err.message);
@@ -776,6 +913,8 @@ function buildReport(rows){
   window._lastReport = { dv, v, oos, par };
 
   reportArea.classList.add('show');
+  // Re-sync the bottom list (buttons already reflect state via pullActionCell).
+  renderPulledList();
 }
 
 function renderSummary(total, low, dvCount, vCount, oosCount){
@@ -786,6 +925,17 @@ function renderSummary(total, low, dvCount, vCount, oosCount){
     <div class="stat vault"><div class="n">${vCount}</div><div class="l">Pull from Vault</div></div>
     <div class="stat oos"><div class="n">${oosCount}</div><div class="l">Out of Stock</div></div>
   `;
+}
+
+// Builds the Pull / Pulled button for a row, reflecting current pulled state.
+function pullActionCell(p, kind){
+  const source = kind === 'dv' ? 'DAY VAULT' : 'VAULT';
+  const srcQty = kind === 'dv' ? p['DAY VAULT'] : p['VAULT'];
+  const isPulled = pulledItems.has(p.name);
+  const nameAttr = encodeURIComponent(p.name);
+  const catAttr = encodeURIComponent(p.category || '');
+  const label = isPulled ? '&#10003; Pulled' : '&rarr; Pull';
+  return `<button class="pull-btn${isPulled ? ' pulled' : ''}" data-name="${nameAttr}" data-source="${source}" data-pull="${p.pull}" data-srcqty="${srcQty}" data-cat="${catAttr}">${label}</button>`;
 }
 
 function renderTable(elId, items, kind){
@@ -835,13 +985,14 @@ function renderTable(elId, items, kind){
       const sourceQty = kind === 'dv' ? p['DAY VAULT'] : (kind === 'v' ? p['VAULT'] : 0);
       const batchHtml = renderBatches(p.sourceBatches, p.floorBatches, p.sourceSubrooms);
       const floorBatchHtml = renderFloorBatches(p.batches ? p.batches['SALES FLOOR'] : null, p.subrooms ? p.subrooms['SALES FLOOR'] : null);
+      const isPulled = kind !== 'oos' && pulledItems.has(p.name);
       body += `
-        <tr>
+        <tr class="${isPulled ? 'row-pulled' : ''}">
           <td><div class="prod-name">${escapeHtml(p.name)}</div>${floorBatchHtml}</td>
           <td class="qty ${p['SALES FLOOR'] <= 0 ? 'zero' : 'low'}">${p['SALES FLOOR']}</td>
           ${kind !== 'oos' ? `
           <td class="qty">${sourceQty}${batchHtml}</td>
-          <td><span class="arrow">&rarr;</span><b>Pull</b></td>
+          <td>${pullActionCell(p, kind)}</td>
           ` : `<td colspan="2" style="color:#7a2c1e;">No units in Day Vault or Vault</td>`}
           <td><span class="badge ${badgeClass}">${badgeText}</span></td>
         </tr>`;
@@ -852,6 +1003,56 @@ function renderTable(elId, items, kind){
     ? `<th>Product</th><th style="text-align:right;">Sales Floor</th><th style="text-align:right;">${kind==='dv'?'Day Vault':'Vault'} Qty &amp; Package ID</th><th>Action</th><th>Source</th>`
     : `<th>Product</th><th style="text-align:right;">Sales Floor</th><th>Note</th><th>Source</th>`;
   el.innerHTML = `<table><thead><tr>${headCols}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderPulledList(){
+  const section = document.getElementById('pulledSection');
+  const el = document.getElementById('pulledTable');
+  const countEl = document.getElementById('pulledCount');
+  const items = [...pulledItems.values()];
+  countEl.textContent = items.length + (items.length === 1 ? ' item' : ' items');
+
+  if (!items.length) {
+    section.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  section.style.display = '';
+
+  const groups = {};
+  for (const p of items) {
+    const cat = p.category || 'Uncategorized';
+    (groups[cat] = groups[cat] || []).push(p);
+  }
+  const catNames = Object.keys(groups).sort((a,b) => {
+    if (a === 'Uncategorized') return 1;
+    if (b === 'Uncategorized') return -1;
+    return a.localeCompare(b);
+  });
+
+  let body = '';
+  for (const cat of catNames) {
+    const catItems = groups[cat].sort((a,b) => a.name.localeCompare(b.name));
+    body += `
+      <tr class="cat-row">
+        <td colspan="4">
+          <span class="cat-label">${escapeHtml(cat)}</span>
+          <span class="cat-count">${catItems.length} ${catItems.length === 1 ? 'item' : 'items'}</span>
+        </td>
+      </tr>`;
+    for (const p of catItems) {
+      const badgeClass = p.source === 'DAY VAULT' ? 'dv' : 'v';
+      const badgeText = p.source === 'DAY VAULT' ? 'Day Vault' : 'Vault';
+      body += `
+        <tr class="row-pulled">
+          <td><div class="prod-name">${escapeHtml(p.name)}</div></td>
+          <td><span class="badge ${badgeClass}">${badgeText}</span></td>
+          <td class="qty">${p.pull}</td>
+          <td><button class="pull-undo no-print" data-name="${encodeURIComponent(p.name)}">Undo</button></td>
+        </tr>`;
+    }
+  }
+  el.innerHTML = `<table><thead><tr><th>Product</th><th>Source</th><th style="text-align:right;">Pull Qty</th><th>Undo</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function renderFloorBatches(floorMap, subroomMap){
@@ -890,15 +1091,16 @@ function escapeHtml(s){
 document.getElementById('exportBtn').addEventListener('click', () => {
   if (!window._lastReport) return;
   const { dv, v, oos, par } = window._lastReport;
-  let csv = 'Product,Category,Sales Floor Qty,Source Room,Source Qty,Pull Qty,Package IDs (Bin),Restock Par\n';
+  let csv = 'Product,Category,Sales Floor Qty,Source Room,Source Qty,Pull Qty,Package IDs (Bin),Restock Par,Pulled\n';
   const esc = s => `"${String(s).replace(/"/g,'""')}"`;
   const batchStr = p => p.sourceBatches ? Object.entries(p.sourceBatches).map(([b,q]) => {
     const bin = p.sourceSubrooms && p.sourceSubrooms[b] ? ` [${p.sourceSubrooms[b]}]` : '';
     return `${b} (${q})${bin}`;
   }).join('; ') : '';
-  for (const p of dv) csv += [esc(p.name), esc(p.category), p['SALES FLOOR'], 'DAY VAULT', p['DAY VAULT'], p.pull, esc(batchStr(p)), par].join(',') + '\n';
-  for (const p of v) csv += [esc(p.name), esc(p.category), p['SALES FLOOR'], 'VAULT', p['VAULT'], p.pull, esc(batchStr(p)), par].join(',') + '\n';
-  for (const p of oos) csv += [esc(p.name), esc(p.category), p['SALES FLOOR'], 'NONE', 0, 0, '', par].join(',') + '\n';
+  const pulledFlag = p => pulledItems.has(p.name) ? 'YES' : '';
+  for (const p of dv) csv += [esc(p.name), esc(p.category), p['SALES FLOOR'], 'DAY VAULT', p['DAY VAULT'], p.pull, esc(batchStr(p)), par, pulledFlag(p)].join(',') + '\n';
+  for (const p of v) csv += [esc(p.name), esc(p.category), p['SALES FLOOR'], 'VAULT', p['VAULT'], p.pull, esc(batchStr(p)), par, pulledFlag(p)].join(',') + '\n';
+  for (const p of oos) csv += [esc(p.name), esc(p.category), p['SALES FLOOR'], 'NONE', 0, 0, '', par, ''].join(',') + '\n';
 
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
